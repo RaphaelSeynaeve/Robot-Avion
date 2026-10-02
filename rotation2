@@ -1,0 +1,189 @@
+"""Tourne et recadre une image à partir de deux points sélectionnés."""
+
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image, ImageOps
+
+# Réglages : None invite à saisir le nom exact dans la liste affichée.
+NOM_IMAGE = "1.jpg"       # Nom exact de l’image, extension comprise.
+ALIGNEMENT = "horizontal"  # « horizontal » ou « vertical »
+ZOOM = 1.0
+POSITION_PREMIER_POINT = None  # (x, y) dans l’image tournée, ou None
+FICHIER_SORTIE = "image_transformee.png"
+TAILLE_NOYAU_GAUSSIEN = 9
+# Taille du voisinage utilisé pour lisser chaque pixel : 9 signifie un noyau 9 × 9.
+# Une taille plus grande renforce le lissage ; elle doit être un entier impair.
+SIGMA_GAUSSIEN = 5.0
+# Contrôle l'étalement des poids du noyau gaussien : plus sigma est grand,
+# plus les pixels éloignés contribuent au résultat et plus le lissage est marqué.
+
+
+def filtre_gaussien(image: Image.Image, taille_noyau: int, sigma: float) -> Image.Image:
+    """Applique un lissage gaussien spatial à une image en niveaux de gris.
+
+    Paramètres :
+        image : image Pillow en niveaux de gris (mode "L").
+        taille_noyau : largeur et hauteur impaires du voisinage de convolution.
+        sigma : écart-type positif qui règle l'étalement des poids gaussiens.
+    Retour : image Pillow filtrée, en niveaux de gris et de mêmes dimensions.
+    """
+    if image.mode != "L":
+        raise ValueError("L'image doit être en niveaux de gris (mode 'L').")
+    if taille_noyau <= 0 or taille_noyau % 2 == 0:
+        raise ValueError("La taille du noyau doit être un entier positif impair.")
+    if sigma <= 0:
+        raise ValueError("sigma doit être strictement positif.")
+
+    rayon = taille_noyau // 2
+    coord = np.arange(-rayon, rayon + 1, dtype=np.float64)
+    noyau = np.exp(-(coord ** 2) / (2 * sigma ** 2))
+    noyau /= noyau.sum()
+
+    pixels = np.asarray(image, dtype=np.float64)
+    # Deux convolutions 1D sont équivalentes au noyau gaussien 2D, avec
+    # un calcul plus léger. Les bords sont prolongés par leur valeur la plus proche.
+    temporaire = np.pad(pixels, ((0, 0), (rayon, rayon)), mode="edge")
+    horizontal = np.zeros_like(pixels)
+    for i, poids in enumerate(noyau):
+        horizontal += poids * temporaire[:, i:i + pixels.shape[1]]
+    temporaire = np.pad(horizontal, ((rayon, rayon), (0, 0)), mode="edge")
+    lisse = np.zeros_like(pixels)
+    for i, poids in enumerate(noyau):
+        lisse += poids * temporaire[i:i + pixels.shape[0], :]
+    return Image.fromarray(np.clip(np.rint(lisse), 0, 255).astype(np.uint8), mode="L")
+
+
+def trouver_images(dossier: Path) -> list[Path]:
+    """Renvoie les images prises en charge trouvées dans un dossier.
+
+    Paramètre : dossier, chemin du dossier à parcourir.
+    Retour : liste triée de chemins vers les fichiers image.
+    """
+    extensions = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+    return sorted(
+        (p for p in dossier.iterdir() if p.is_file() and p.suffix.lower() in extensions),
+        key=lambda p: p.name.lower(),
+    )
+
+
+def recadrer(image: Image.Image, centre: tuple[float, float], zoom: float) -> Image.Image:
+    """Recadre autour d'un point puis redimensionne aux dimensions d'origine.
+
+    Paramètres :
+        image : image à recadrer.
+        centre : coordonnées (x, y) du centre du recadrage, en pixels.
+        zoom : facteur strictement positif ; une valeur supérieure à 1 agrandit.
+    Retour : image recadrée et redimensionnée, de mêmes dimensions que l'entrée.
+    """
+    if zoom <= 0:
+        raise ValueError("ZOOM doit être strictement positif.")
+    largeur, hauteur = image.size
+    l = max(1, min(largeur, round(largeur / zoom)))
+    h = max(1, min(hauteur, round(hauteur / zoom)))
+    gauche = max(0, min(largeur - l, round(centre[0] - l / 2)))
+    haut = max(0, min(hauteur - h, round(centre[1] - h / 2)))
+    return image.crop((gauche, haut, gauche + l, haut + h)).resize(
+        (largeur, hauteur), Image.Resampling.LANCZOS
+    )
+
+
+def configurer_axes(ax, image: Image.Image) -> None:
+    """Règle les axes pour afficher les coordonnées pixel de l'image.
+
+    Paramètres : ax, axes Matplotlib à configurer ; image, image affichée.
+    Retour : aucun (les axes sont modifiés directement).
+    """
+    largeur, hauteur = image.size
+    ax.set_xlim(-0.5, largeur - 0.5)
+    ax.set_ylim(hauteur - 0.5, -0.5)
+    ax.set_xlabel("X (pixels)")
+    ax.set_ylabel("Y (pixels)")
+
+
+def main() -> None:
+    """Demande deux points, aligne et filtre l'image, puis enregistre le résultat.
+
+    Entrées utilisateur : nom de l'image si NOM_IMAGE vaut None, puis deux clics
+    indiquant les points à aligner. Les autres réglages sont définis en haut du
+    fichier. Sortie : fichier image en niveaux de gris nommé FICHIER_SORTIE.
+    Retour : aucun.
+    """
+    # Petit test intégré du filtre : une image uniforme doit rester uniforme.
+    image_test = Image.new("L", (5, 5), color=120)
+    resultat_test = filtre_gaussien(image_test, 3, 1.0)
+    assert resultat_test.size == image_test.size
+    assert np.array_equal(np.asarray(resultat_test), np.full((5, 5), 120, dtype=np.uint8))
+
+    dossier = Path(__file__).resolve().parent
+    images = trouver_images(dossier)
+    if not images:
+        raise FileNotFoundError("Aucune image trouvée dans le dossier.")
+    print("Images disponibles :")
+    for fichier in images:
+        print(f"  {fichier.name}")
+    nom = NOM_IMAGE if NOM_IMAGE is not None else input("Nom exact de l’image : ").strip()
+    chemin = next((p for p in images if p.name == nom), None)
+    if chemin is None:
+        raise FileNotFoundError(f"Image introuvable : {nom}")
+
+    # Applique l’orientation EXIF avant toute opération.
+    with Image.open(chemin) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+
+    fig, ax = plt.subplots()
+    ax.imshow(image)
+    configurer_axes(ax, image)
+    ax.set_title("Cliquez deux points, par exemple les centres des yeux")
+    points = plt.ginput(2, timeout=-1)
+    plt.close(fig)
+    if len(points) != 2:
+        raise ValueError("Deux points doivent être sélectionnés.")
+
+    delta = np.asarray(points[1], dtype=float) - np.asarray(points[0], dtype=float)
+    if np.allclose(delta, 0):
+        raise ValueError("Les points sélectionnés doivent être distincts.")
+    angle = float(np.degrees(np.arctan2(delta[1], delta[0])))
+    alignement = ALIGNEMENT.strip().lower()
+    if alignement == "horizontal":
+        correction = angle
+    elif alignement == "vertical":
+        correction = angle - 90.0
+    else:
+        raise ValueError("ALIGNEMENT doit être « horizontal » ou « vertical ».")
+
+    # expand=False préserve le cadre ; les zones hors image sont remplies en noir.
+    tournee = image.rotate(correction, resample=Image.Resampling.BICUBIC, expand=False)
+    # Calcule où se trouve le premier point après rotation autour du centre.
+    x, y = points[0]
+    theta = np.radians(correction)
+    dx, dy = x - image.width / 2, y - image.height / 2
+    premier = (image.width / 2 + dx * np.cos(theta) + dy * np.sin(theta),
+               image.height / 2 - dx * np.sin(theta) + dy * np.cos(theta))
+    centre = POSITION_PREMIER_POINT if POSITION_PREMIER_POINT is not None else premier
+    resultat = recadrer(tournee, centre, ZOOM)
+    resultat_gris = resultat.convert("L")
+    resultat_gaussien = filtre_gaussien(
+        resultat_gris, TAILLE_NOYAU_GAUSSIEN, SIGMA_GAUSSIEN
+    )
+
+    sortie = dossier / FICHIER_SORTIE
+    resultat_gaussien.save(sortie)
+    print(f"Résultat enregistré : {sortie}")
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    axes[0].imshow(resultat_gris, cmap="gray", vmin=0, vmax=255)
+    configurer_axes(axes[0], resultat_gris)
+    axes[0].set_title("Après rotation et recadrage")
+    axes[1].imshow(resultat_gaussien, cmap="gray", vmin=0, vmax=255)
+    configurer_axes(axes[1], resultat_gaussien)
+    axes[1].set_title(f"Après filtre gaussien (noyau {TAILLE_NOYAU_GAUSSIEN}, sigma={SIGMA_GAUSSIEN})")
+    fig.tight_layout()
+    plt.show()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError) as erreur:
+        print(f"Erreur : {erreur}")

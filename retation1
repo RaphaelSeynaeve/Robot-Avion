@@ -1,0 +1,153 @@
+"""Registration manuelle de quatre images par alignement de deux points.
+
+Dépendances : pip install matplotlib pillow numpy
+Exécution : python retation1
+
+Pour chaque image, cliquer deux fois sur les points à mettre à l'horizontale,
+puis fermer la fenêtre. L'image corrigée est enregistrée dans le dossier choisi.
+"""
+
+# On importe les bibliothèques nécessaires à l'affichage des images, au traitement
+# numérique et à la gestion des chemins de fichiers.
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image, ImageFilter
+
+
+# ======================== PARAMÈTRES MODIFIABLES ========================
+# Indiquer ici les chemins des quatre images à enregistrer.
+# Ces chemins peuvent être relatifs au script ou absolus.
+IMAGE_PATHS = [
+	r"1.jpg",
+	r"2.jpg",
+	r"3.jpg",
+	r"4.jpg",
+]
+
+# Dossier de sortie des images corrigées.
+OUTPUT_DIR = Path("images_enregistrees")
+
+# Couleur de fond des zones ajoutées lors de la rotation, au format RGB.
+# Cela évite d'avoir des pixels transparents ou de couleur incohérente.
+BACKGROUND_COLOR = (0, 0, 0)
+# Intensité du filtre gaussien appliqué à l'image corrigée (0 désactive le filtre).
+# Un léger flou peut améliorer le rendu visuel après la rotation.
+GAUSSIAN_BLUR_RADIUS = 2
+# ========================================================================
+
+
+# Cette fonction affiche l'image et attend deux clics de l'utilisateur.
+# Les deux points sélectionnés représentent la ligne à rendre horizontale.
+def choisir_deux_points(image: Image.Image, nom: str) -> list[tuple[float, float]]:
+	"""Affiche l'image avec ses axes en pixels et récupère deux clics."""
+	points: list[tuple[float, float]] = []
+	largeur, hauteur = image.size
+
+	# On crée une figure Matplotlib avec un système de coordonnées pixel.
+	# L'option origin="upper" permet d'avoir l'origine en haut à gauche comme dans une image.
+	figure, axe = plt.subplots()
+	axe.imshow(image, origin="upper", extent=(-0.5, largeur - 0.5,
+													    hauteur - 0.5, -0.5))
+	axe.set_xlim(-0.5, largeur - 0.5)
+	axe.set_ylim(hauteur - 0.5, -0.5)
+	axe.set_aspect("equal")
+	axe.set_xlabel("x (pixels)")
+	axe.set_ylabel("y (pixels)")
+	axe.set_title(f"{nom} — cliquez sur les 2 points à aligner")
+	axe.set_xticks(np.arange(0, largeur, max(1, largeur // 10)))
+	axe.set_yticks(np.arange(0, hauteur, max(1, hauteur // 10)))
+	axe.grid(color="white", alpha=0.25)
+
+	# Cette fonction est appelée à chaque clic sur la figure.
+	# Elle enregistre le point et l'affiche sur l'image.
+	def clic(event):
+		if event.inaxes != axe or event.xdata is None or event.ydata is None:
+			return
+		if len(points) < 2:
+			point = (float(event.xdata), float(event.ydata))
+			points.append(point)
+			axe.plot(*point, "ro")
+			axe.annotate(str(len(points)), point, color="red", xytext=(5, 5),
+						 textcoords="offset points")
+			if len(points) == 2:
+				axe.set_title(f"{nom} — points choisis, fermez cette fenêtre")
+			figure.canvas.draw_idle()
+
+	figure.canvas.mpl_connect("button_press_event", clic)
+	plt.show()
+	plt.close(figure)
+
+	if len(points) != 2:
+		raise RuntimeError(f"Sélection interrompue : deux points requis pour {nom}.")
+	return points
+
+
+# Cette fonction calcule l'angle entre les deux points sélectionnés, puis applique
+# une rotation à l'image pour rendre cette ligne horizontale.
+def corriger_orientation(image: Image.Image,
+						 points: list[tuple[float, float]]) -> Image.Image:
+	"""Aligne les clics à l'horizontale et recadre l'image entre eux en largeur."""
+	(x1, y1), (x2, y2) = points
+	angle = float(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+	# Les coordonnées écran ont y vers le bas ; PIL corrige cette pente avec angle.
+	resultat = image.rotate(angle, resample=Image.Resampling.BICUBIC,
+										expand=True, fillcolor=BACKGROUND_COLOR)
+
+	# On projette les points sélectionnés dans le repère de l'image après rotation,
+	# pour déterminer quelle partie de l'image correspond à la zone utile à conserver.
+	rad = np.radians(angle)
+	cos_a, sin_a = np.cos(rad), np.sin(rad)
+	centre_x, centre_y = image.width / 2, image.height / 2
+	centre_sortie_x = resultat.width / 2
+	x_gauche = cos_a * (x1 - centre_x) + sin_a * (y1 - centre_y) + centre_sortie_x
+	x_droit = cos_a * (x2 - centre_x) + sin_a * (y2 - centre_y) + centre_sortie_x
+	boite_gauche = max(0, int(np.ceil(x_gauche)))
+	boite_droite = min(resultat.width, int(np.floor(x_droit)) + 1)
+	if boite_gauche >= boite_droite:
+		raise ValueError("Les deux clics doivent encadrer une largeur non nulle.")
+	return resultat.crop((boite_gauche, 0, boite_droite, resultat.height))
+
+
+# Affiche le résultat final dans une fenêtre Matplotlib, avec possibilité de zoom.
+def afficher_resultat(image: Image.Image, nom: str) -> None:
+	"""Affiche l'image corrigée, ajustée à la fenêtre avec les outils de zoom."""
+	largeur, hauteur = image.size
+	rapport = largeur / hauteur
+	hauteur_figure = 8
+	largeur_figure = min(12, max(6, hauteur_figure * rapport))
+	figure, axe = plt.subplots(figsize=(largeur_figure, hauteur_figure))
+	axe.imshow(image)
+	axe.set_title(f"{nom} — image corrigée (zoom disponible dans la barre d'outils)")
+	axe.axis("off")
+	figure.tight_layout()
+	plt.show()
+	plt.close(figure)
+
+
+# Point d'entrée du programme : on traite toutes les images une par une.
+def main() -> None:
+	# Crée le dossier de sortie s'il n'existe pas.
+	OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+	for chemin in IMAGE_PATHS:
+		path = Path(chemin)
+		if not path.is_file():
+			raise FileNotFoundError(f"Image introuvable : {path} (modifiez IMAGE_PATHS)")
+
+		# Ouverture de l'image et conversion en RGB pour éviter les problèmes de canal.
+		with Image.open(path) as source:
+			image = source.convert("RGB")
+
+		# Sélection des deux points à aligner.
+		points = choisir_deux_points(image, path.name)
+		# Rotation de l'image pour rendre la ligne horizontale.
+		resultat = corriger_orientation(image, points)
+		if GAUSSIAN_BLUR_RADIUS > 0:
+			resultat = resultat.filter(
+				ImageFilter.GaussianBlur(radius=GAUSSIAN_BLUR_RADIUS)
+			)
+		# Affichage du résultat avant enregistrement.
+		afficher_resultat(resultat, path.name)
+		# Sauvegarde dans le dossier de sortie.
