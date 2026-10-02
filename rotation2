@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image, ImageOps
 
-# Réglages : None invite à saisir le nom exact dans la liste affichée.
-NOM_IMAGE = "1.jpg"       # Nom exact de l’image, extension comprise.
+# Réglages : None traite les quatre premières images trouvées.
+NOM_IMAGES = None  # Liste de quatre noms exacts, ou None pour les quatre premières.
 ALIGNEMENT = "horizontal"  # « horizontal » ou « vertical »
 ZOOM = 1.0
 POSITION_PREMIER_POINT = None  # (x, y) dans l’image tournée, ou None
@@ -103,13 +103,7 @@ def configurer_axes(ax, image: Image.Image) -> None:
 
 
 def main() -> None:
-    """Demande deux points, aligne et filtre l'image, puis enregistre le résultat.
-
-    Entrées utilisateur : nom de l'image si NOM_IMAGE vaut None, puis deux clics
-    indiquant les points à aligner. Les autres réglages sont définis en haut du
-    fichier. Sortie : fichier image en niveaux de gris nommé FICHIER_SORTIE.
-    Retour : aucun.
-    """
+    """Traite quatre images successivement avec les mêmes réglages."""
     # Petit test intégré du filtre : une image uniforme doit rester uniforme.
     image_test = Image.new("L", (5, 5), color=120)
     resultat_test = filtre_gaussien(image_test, 3, 1.0)
@@ -118,68 +112,80 @@ def main() -> None:
 
     dossier = Path(__file__).resolve().parent
     images = trouver_images(dossier)
-    if not images:
-        raise FileNotFoundError("Aucune image trouvée dans le dossier.")
+    if NOM_IMAGES is None and len(images) < 4:
+        raise FileNotFoundError("Il faut au moins quatre images dans le dossier.")
     print("Images disponibles :")
     for fichier in images:
         print(f"  {fichier.name}")
-    nom = NOM_IMAGE if NOM_IMAGE is not None else input("Nom exact de l’image : ").strip()
-    chemin = next((p for p in images if p.name == nom), None)
-    if chemin is None:
-        raise FileNotFoundError(f"Image introuvable : {nom}")
-
-    # Applique l’orientation EXIF avant toute opération.
-    with Image.open(chemin) as source:
-        image = ImageOps.exif_transpose(source).convert("RGB")
-
-    fig, ax = plt.subplots()
-    ax.imshow(image)
-    configurer_axes(ax, image)
-    ax.set_title("Cliquez deux points, par exemple les centres des yeux")
-    points = plt.ginput(2, timeout=-1)
-    plt.close(fig)
-    if len(points) != 2:
-        raise ValueError("Deux points doivent être sélectionnés.")
-
-    delta = np.asarray(points[1], dtype=float) - np.asarray(points[0], dtype=float)
-    if np.allclose(delta, 0):
-        raise ValueError("Les points sélectionnés doivent être distincts.")
-    angle = float(np.degrees(np.arctan2(delta[1], delta[0])))
-    alignement = ALIGNEMENT.strip().lower()
-    if alignement == "horizontal":
-        correction = angle
-    elif alignement == "vertical":
-        correction = angle - 90.0
+    if NOM_IMAGES is None:
+        chemins = images[:4]
     else:
-        raise ValueError("ALIGNEMENT doit être « horizontal » ou « vertical ».")
+        if len(NOM_IMAGES) != 4:
+            raise ValueError("NOM_IMAGES doit contenir exactement quatre noms.")
+        chemins = []
+        for nom in NOM_IMAGES:
+            chemin = next((p for p in images if p.name == nom), None)
+            if chemin is None:
+                raise FileNotFoundError(f"Image introuvable : {nom}")
+            chemins.append(chemin)
 
-    # expand=False préserve le cadre ; les zones hors image sont remplies en noir.
-    tournee = image.rotate(correction, resample=Image.Resampling.BICUBIC, expand=False)
-    # Calcule où se trouve le premier point après rotation autour du centre.
-    x, y = points[0]
-    theta = np.radians(correction)
-    dx, dy = x - image.width / 2, y - image.height / 2
-    premier = (image.width / 2 + dx * np.cos(theta) + dy * np.sin(theta),
-               image.height / 2 - dx * np.sin(theta) + dy * np.cos(theta))
-    centre = POSITION_PREMIER_POINT if POSITION_PREMIER_POINT is not None else premier
-    resultat = recadrer(tournee, centre, ZOOM)
-    resultat_gris = resultat.convert("L")
-    resultat_gaussien = filtre_gaussien(
-        resultat_gris, TAILLE_NOYAU_GAUSSIEN, SIGMA_GAUSSIEN
-    )
+    for numero, chemin in enumerate(chemins, start=1):
+        print(f"\nImage {numero}/4 : {chemin.name}")
+        # Applique l’orientation EXIF avant toute opération.
+        with Image.open(chemin) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
 
-    sortie = dossier / FICHIER_SORTIE
-    resultat_gaussien.save(sortie)
-    print(f"Résultat enregistré : {sortie}")
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-    axes[0].imshow(resultat_gris, cmap="gray", vmin=0, vmax=255)
-    configurer_axes(axes[0], resultat_gris)
-    axes[0].set_title("Après rotation et recadrage")
-    axes[1].imshow(resultat_gaussien, cmap="gray", vmin=0, vmax=255)
-    configurer_axes(axes[1], resultat_gaussien)
-    axes[1].set_title(f"Après filtre gaussien (noyau {TAILLE_NOYAU_GAUSSIEN}, sigma={SIGMA_GAUSSIEN})")
-    fig.tight_layout()
-    plt.show()
+        fig, ax = plt.subplots()
+        ax.imshow(image)
+        configurer_axes(ax, image)
+        ax.set_title(f"{chemin.name} — cliquez deux points à aligner")
+        points = plt.ginput(2, timeout=-1)
+        plt.close(fig)
+        if len(points) != 2:
+            raise ValueError("Deux points doivent être sélectionnés pour chaque image.")
+
+        delta = np.asarray(points[1], dtype=float) - np.asarray(points[0], dtype=float)
+        if np.allclose(delta, 0):
+            raise ValueError("Les points sélectionnés doivent être distincts.")
+        angle = float(np.degrees(np.arctan2(delta[1], delta[0])))
+        alignement = ALIGNEMENT.strip().lower()
+        if alignement == "horizontal":
+            correction = angle
+        elif alignement == "vertical":
+            correction = angle - 90.0
+        else:
+            raise ValueError("ALIGNEMENT doit être « horizontal » ou « vertical ».")
+
+        # expand=False préserve le cadre ; les zones hors image sont remplies en noir.
+        tournee = image.rotate(correction, resample=Image.Resampling.BICUBIC, expand=False)
+        # Calcule où se trouve le premier point après rotation autour du centre.
+        x, y = points[0]
+        theta = np.radians(correction)
+        dx, dy = x - image.width / 2, y - image.height / 2
+        premier = (image.width / 2 + dx * np.cos(theta) + dy * np.sin(theta),
+                   image.height / 2 - dx * np.sin(theta) + dy * np.cos(theta))
+        centre = POSITION_PREMIER_POINT if POSITION_PREMIER_POINT is not None else premier
+        resultat = recadrer(tournee, centre, ZOOM)
+        resultat_gris = resultat.convert("L")
+        resultat_gaussien = filtre_gaussien(
+            resultat_gris, TAILLE_NOYAU_GAUSSIEN, SIGMA_GAUSSIEN
+        )
+
+        base_sortie = Path(FICHIER_SORTIE)
+        sortie = dossier / f"{base_sortie.stem}_{numero}{base_sortie.suffix}"
+        resultat_gaussien.save(sortie)
+        print(f"Résultat enregistré : {sortie}")
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+        axes[0].imshow(resultat_gris, cmap="gray", vmin=0, vmax=255)
+        configurer_axes(axes[0], resultat_gris)
+        axes[0].set_title("Après rotation et recadrage")
+        axes[1].imshow(resultat_gaussien, cmap="gray", vmin=0, vmax=255)
+        configurer_axes(axes[1], resultat_gaussien)
+        axes[1].set_title(
+            f"Après filtre gaussien (noyau {TAILLE_NOYAU_GAUSSIEN}, sigma={SIGMA_GAUSSIEN})"
+        )
+        fig.tight_layout()
+        plt.show()
 
 
 if __name__ == "__main__":
@@ -187,3 +193,5 @@ if __name__ == "__main__":
         main()
     except (OSError, ValueError) as erreur:
         print(f"Erreur : {erreur}")
+
+#salut
